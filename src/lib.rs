@@ -37,17 +37,22 @@
 //!     let stealer2 = stealer.clone();
 //!     stealer2.steal();
 
+#![no_std]
+extern crate alloc;
+
 pub use self::Stolen::*;
 
-use std::sync::Arc;
-use std::mem::forget;
-use std::ptr;
-use std::marker::PhantomData;
-use std::cell::Cell;
-use std::fmt;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::cell::Cell;
+use core::fmt;
+use core::marker::PhantomData;
+use core::mem::forget;
+use core::ptr;
 
-use std::sync::atomic::{AtomicIsize, AtomicPtr, fence};
-use std::sync::atomic::Ordering::{SeqCst, Acquire, Release, Relaxed};
+use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
+use core::sync::atomic::{fence, AtomicIsize, AtomicPtr};
 
 // Initial size for a buffer.
 static MIN_SIZE: usize = 32;
@@ -80,7 +85,9 @@ pub struct Stealer<T: Send> {
 
 impl<T: Send> Clone for Stealer<T> {
     fn clone(&self) -> Self {
-        Stealer { deque: self.deque.clone() }
+        Stealer {
+            deque: self.deque.clone(),
+        }
     }
 }
 
@@ -126,11 +133,13 @@ struct Buffer<T: Send> {
 pub fn new<T: Send>() -> (Worker<T>, Stealer<T>) {
     let a = Arc::new(Deque::new());
     let b = a.clone();
-    (Worker {
-         deque: a,
-         marker: PhantomData,
-     },
-     Stealer { deque: b })
+    (
+        Worker {
+            deque: a,
+            marker: PhantomData,
+        },
+        Stealer { deque: b },
+    )
 }
 
 impl<T: Send> Worker<T> {
@@ -210,13 +219,17 @@ impl<T: Send> Deque<T> {
         if size != 0 {
             return Some(data);
         }
-        if self.top.compare_and_swap(t, t.wrapping_add(1), SeqCst) == t {
+        if self
+            .top
+            .compare_exchange(t, t.wrapping_add(1), SeqCst, SeqCst)
+            .is_ok()
+        {
             self.bottom.store(t.wrapping_add(1), Relaxed);
-            return Some(data);
+            Some(data)
         } else {
             self.bottom.store(t.wrapping_add(1), Relaxed);
             forget(data); // Someone else stole this value
-            return None;
+            None
         }
     }
 
@@ -237,7 +250,11 @@ impl<T: Send> Deque<T> {
         let data = (*a).get(t);
 
         // Attempt to increment top.
-        if self.top.compare_and_swap(t, t.wrapping_add(1), SeqCst) == t {
+        if self
+            .top
+            .compare_exchange(t, t.wrapping_add(1), SeqCst, SeqCst)
+            .is_ok()
+        {
             Data(data)
         } else {
             forget(data); // Someone else stole this value
@@ -285,7 +302,7 @@ impl<T: Send> Buffer<T> {
     unsafe fn new(size: usize) -> Buffer<T> {
         Buffer {
             storage: allocate(size),
-            size: size,
+            size,
             prev: None,
         }
     }
@@ -326,7 +343,7 @@ impl<T: Send> Buffer<T> {
             i = i.wrapping_add(1);
         }
         buf.prev = Some(self);
-        return buf;
+        buf
     }
 }
 
@@ -338,7 +355,7 @@ impl<T: Send> Drop for Buffer<T> {
 }
 
 impl<T: Send> fmt::Debug for Deque<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> fmt::Result {
         f.debug_struct("Deque")
             .field("bottom", &self.bottom)
             .field("top", &self.top)
@@ -348,7 +365,7 @@ impl<T: Send> fmt::Debug for Deque<T> {
 }
 
 impl<T: Send> fmt::Debug for Worker<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> fmt::Result {
         f.debug_struct("Worker")
             .field("deque", &self.deque)
             .field("marker", &self.marker)
@@ -357,7 +374,7 @@ impl<T: Send> fmt::Debug for Worker<T> {
 }
 
 impl<T: Send> fmt::Debug for Stealer<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> fmt::Result {
         f.debug_struct("Stealer")
             .field("deque", &self.deque)
             .finish()

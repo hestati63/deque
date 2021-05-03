@@ -3,11 +3,11 @@ extern crate rand;
 
 use std::boxed::Box;
 use std::mem;
-use std::thread::{self, JoinHandle};
-use std::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT, AtomicUsize, ATOMIC_USIZE_INIT};
 use std::sync::atomic::Ordering::SeqCst;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::thread::{self, JoinHandle};
 
-use deque::{Data, Abort, Empty, Worker, Stealer};
+use deque::{Abort, Data, Empty, Stealer, Worker};
 use rand::Rng;
 
 #[test]
@@ -128,7 +128,9 @@ fn many_stampede() {
     let threads = (0..AMT)
         .map(|_| {
             let (w, s) = deque::new::<Box<isize>>();
-            thread::spawn(move || { stampede(w, s, 4, 10000); })
+            thread::spawn(move || {
+                stampede(w, s, 4, 10000);
+            })
         })
         .collect::<Vec<JoinHandle<()>>>();
 
@@ -141,8 +143,8 @@ fn many_stampede() {
 fn stress() {
     static AMT: isize = 100000;
     static NTHREADS: isize = 8;
-    static DONE: AtomicBool = ATOMIC_BOOL_INIT;
-    static HITS: AtomicUsize = ATOMIC_USIZE_INIT;
+    static DONE: AtomicBool = AtomicBool::new(false);
+    static HITS: AtomicUsize = AtomicUsize::new(0);
     let (w, s) = deque::new::<isize>();
 
     let threads = (0..NTHREADS)
@@ -201,31 +203,32 @@ fn stress() {
 fn no_starvation() {
     static AMT: isize = 10000;
     static NTHREADS: isize = 4;
-    static DONE: AtomicBool = ATOMIC_BOOL_INIT;
+    static DONE: AtomicBool = AtomicBool::new(false);
     let (w, s) = deque::new::<(isize, usize)>();
 
     let (threads, hits): (Vec<_>, Vec<_>) = (0..NTHREADS)
         .map(|_| {
             let s = s.clone();
             let unique_box = Box::new(AtomicUsize::new(0));
-            let thread_box =
-                UnsafeAtomicUsize(unsafe {
-                    *mem::transmute::<&Box<AtomicUsize>, *const *mut AtomicUsize>(&unique_box)
-                });
-            (thread::spawn(move || unsafe {
-                let UnsafeAtomicUsize(thread_box) = thread_box;
-                loop {
-                    match s.steal() {
-                        Data((1, 2)) => {
-                            (*thread_box).fetch_add(1, SeqCst);
+            let thread_box = UnsafeAtomicUsize(unsafe {
+                *mem::transmute::<&Box<AtomicUsize>, *const *mut AtomicUsize>(&unique_box)
+            });
+            (
+                thread::spawn(move || unsafe {
+                    let UnsafeAtomicUsize(thread_box) = thread_box;
+                    loop {
+                        match s.steal() {
+                            Data((1, 2)) => {
+                                (*thread_box).fetch_add(1, SeqCst);
+                            }
+                            Data(..) => panic!(),
+                            _ if DONE.load(SeqCst) => break,
+                            _ => {}
                         }
-                        Data(..) => panic!(),
-                        _ if DONE.load(SeqCst) => break,
-                        _ => {}
                     }
-                }
-            }),
-             unique_box)
+                }),
+                unique_box,
+            )
         })
         .unzip();
 
